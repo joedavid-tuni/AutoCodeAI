@@ -1,0 +1,507 @@
+import tkinter as tk
+from tkinter import ttk
+import openai
+import re
+from tkinter import PhotoImage
+from PIL import Image, ImageTk  # Import from Pillow
+import os
+import requests
+
+
+# OpenAI setup
+openai.api_key = "insert valid key here"
+messages = [{"role": "system", "content": "You are a helpful assistant that provides Arduino code."}]
+# https://platform.openai.com/api-keys
+
+global board_combo
+
+# Global widget declarations
+v_scrollbar = None
+code_text = None
+line_numbers = None
+user_input = None
+board_combo = None
+explanation_text = None
+tab_text_boxes = {}  # New global dictionary to store text boxes
+additional_code_tabs = []  # Add this at the beginning of your script
+
+# Global variables for the pinout frame size
+pinout_frame_width = 400  # example width
+pinout_frame_height = 400  # example height
+
+
+def show_user_guide():
+    guide_window = tk.Toplevel(root)
+    guide_window.title("User Guide")
+    guide_text = """Before using the Arduino Code Requester tool, it's important to understand some basics about Arduinos and microcontrollers:
+1) Microcontroller: A microcontroller is a compact integrated circuit designed to govern a specific operation in an embedded system. It's like a mini-computer on a single chip with its own processor, memory, and input/output (I/O) peripherals.
+2) Arduino: Arduino is an open-source electronics platform based on easy-to-use hardware and software. It's great for creating interactive projects where real-world data interacts with the digital world.
+3) Arduino Board: This is the physical part where you connect components like sensors, LEDs, and buttons. It has digital and analog I/O pins that can be interfaced to various expansion boards (shields) and other circuits.
+4) Pins: Pins are the silver lines on the Arduino board that you use to connect it to different components. Digital pins are used for digital input/output operations, and analog pins are used for analog inputs like reading sensor values.
+5) Arduino IDE (Integrated Development Environment): This is the software you use to write and upload computer code to the physical Arduino board. The IDE allows you to write code in a simple way and then upload it to the Arduino hardware.
+6) Programming in Arduino: Arduino uses a simplified version of C++, making it easier to learn and program. You write the code on your computer in the Arduino IDE and then upload it to the Arduino board.
+
+Understanding these concepts will help you in using the tool effectively for your Arduino projects.
+
+You can ask more information by writing your questions in the "Your request" box!
+"""
+    guide_label = tk.Label(guide_window, text=guide_text, wraplength=400, justify="left")
+    guide_label.pack(padx=10, pady=10)
+
+
+
+# Global variables
+messages = []
+
+def request_code():
+    global user_input, code_text, explanation_text, messages
+
+    # Get user message
+    user_message = user_input.get("1.0", tk.END).strip()
+
+    # Append user message to messages
+    board_selection = board_combo.get()
+    messages.append({"role": "user", "content": f"{board_selection}: {user_message}"})
+
+    # Create a request to the OpenAI API using requests
+    api_key = "Enter a valid API key here"  # Replace with your actual API key, consider a safer way to store it
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    payload = {
+        #"model": "gpt-3.5-turbo",
+        "model": "gpt-4o",
+        "messages": messages,
+        "max_tokens": 1000
+    }
+    response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+
+    # Handle the response
+    try:
+        JSONResponse = response.json()
+        reply = JSONResponse['choices'][0]['message']['content']
+    except (KeyError, IndexError, ValueError):
+        reply = "Failed to parse response."
+
+    # Extract code and explanation from the response (Assuming code block is encapsulated by '```')
+    patterns = [r'```arduino\n(.*?)```', r'```cpp\n(.*?)```', r'```C\+\+\n(.*?)```', r'```c\n(.*?)```', r'```c\+\+\n(.*?)```']
+    code = "No code found in the answer from chatGPT."
+    for pattern in patterns:
+        match = re.search(pattern, reply, re.DOTALL)
+        if match:
+            code = match.group(1).strip()
+            break
+
+    explanation = reply.replace(f'```arduino\n{code}\n```', '').strip()
+
+    # Update GUI elements
+    code_text.configure(state=tk.NORMAL)
+    code_text.delete(1.0, tk.END)
+    code_text.insert(tk.END, "\n" + code)  # Inserting a blank line before the code
+    code_text.configure(state=tk.DISABLED)
+
+    explanation_text.configure(state=tk.NORMAL)
+    explanation_text.delete(1.0, tk.END)
+    explanation_text.insert(tk.END, "\n" + explanation)
+    explanation_text.configure(state=tk.DISABLED)
+
+
+def get_board_names():
+    # Scan the current directory for JPEG files
+    files = os.listdir('.')
+    board_names = []
+    for file in files:
+        if file.startswith("board_") and file.endswith(".jpg"):
+            # Extract board name and remove the file extension
+            name = file.replace("board_", "").replace(".jpg", "")
+            board_names.append(name)
+    return board_names
+
+
+
+def on_scroll(*args):
+    global v_scrollbar, code_text, line_numbers
+    code_text.yview(*args)
+    line_numbers.yview(*args)
+
+def yscroll(*args):
+    global v_scrollbar, code_text, line_numbers
+    v_scrollbar.set(*args)
+    code_text.yview_moveto(args[0])
+    line_numbers.yview_moveto(args[0])
+
+def sync_scroll(event):
+    global code_text, line_numbers
+    code_text.yview_scroll(-1*(event.delta//120), "units")
+    line_numbers.yview_scroll(-1*(event.delta//120), "units")
+
+def on_canvas_scroll(event):
+    canvas.configure(scrollregion=canvas.bbox("all"))
+
+
+zoom_level = 1.0 # Global variable for zoom level
+original_img = None # Global variable to hold the original image
+
+
+# Function to update the pinout image
+def update_pinout_image(board_type):
+    global original_img, img_tk, pinout_canvas, zoom_level
+
+    # Determine the file name based on the board type
+    pinout_file = f"board_{board_type}.jpg"
+    no_pinout_file = "board_NoPinout.jpg"  # Default image if specific pinout not available
+
+    # Check if the file exists
+    if os.path.isfile(pinout_file):
+        original_img = Image.open(pinout_file)
+    else:
+        original_img = Image.open(no_pinout_file)
+
+    img_tk = ImageTk.PhotoImage(original_img)
+
+    # Calculate initial zoom level to fit the image within the canvas
+    zoom_level = min(pinout_frame_width / original_img.size[0], pinout_frame_height / original_img.size[1])
+    update_zoomed_image()
+
+    pinout_canvas.create_image(0, 0, anchor="nw", image=img_tk)
+    pinout_canvas.config(scrollregion=pinout_canvas.bbox("all"))
+
+
+def move_image(event):
+    canvas = event.widget
+    canvas.scan_dragto(event.x, event.y, gain=1)
+
+def press(event):
+    canvas = event.widget
+    canvas.scan_mark(event.x, event.y)
+
+
+# Function to create the frame for the pinout image
+
+
+def create_pinout_frame(parent):
+    global pinout_canvas, original_img, img_tk, zoom_level, pinout_frame
+
+    pinout_frame = ttk.LabelFrame(parent, text="Pinout Image", padding=(10, 5))
+    pinout_frame.grid(row=0, column=3, rowspan=2, padx=10, pady=10, sticky='nsew')
+
+    pinout_canvas = tk.Canvas(pinout_frame, width=pinout_frame_width, height=pinout_frame_height, bg='white')
+    pinout_canvas.grid(row=0, column=0, padx=10, pady=10)
+
+    pinout_canvas.bind("<B1-Motion>", move_image)
+    pinout_canvas.bind("<Button-1>", press)
+
+    # Add zoom buttons inside the pinout_frame
+    zoom_in_button = ttk.Button(pinout_frame, text="+", command=zoom_in)
+    zoom_in_button.grid(row=1, column=0, sticky='w', padx=5, pady=5)
+
+    zoom_out_button = ttk.Button(pinout_frame, text="-", command=zoom_out)
+    zoom_out_button.grid(row=1, column=0, sticky='e', padx=5, pady=5)
+
+
+def create_zoom_buttons(parent):
+    zoom_in_button = ttk.Button(parent, text="+", command=zoom_in)
+    zoom_in_button.pack(side="left", padx=2, pady=2)
+
+    zoom_out_button = ttk.Button(parent, text="-", command=zoom_out)
+    zoom_out_button.pack(side="left", padx=2, pady=2)
+
+
+# Modify these functions to not require an event parameter
+def zoom_in():
+    global zoom_level
+    zoom_level += 0.1
+    update_zoomed_image()
+
+def zoom_out():
+    global zoom_level
+    zoom_level -= 0.1  # Decrease zoom level by a smaller increment
+    zoom_level = max(0.1, zoom_level)  # Allow zoom level to go below 1.0
+    update_zoomed_image()
+
+
+# This function updates the image based on the current zoom level
+def update_zoomed_image():
+    global pinout_canvas, zoom_level, original_img, img_tk
+    # Calculate the new size based on the zoom level
+    new_width = int(original_img.size[0] * zoom_level)
+    new_height = int(original_img.size[1] * zoom_level)
+    # Resize the image
+    #img = original_img.resize((new_width, new_height), Image.ANTIALIAS)
+    img = original_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    img_tk = ImageTk.PhotoImage(img)
+    # Update the canvas with the new image
+    pinout_canvas.create_image(0, 0, anchor="nw", image=img_tk)
+    pinout_canvas.config(scrollregion=pinout_canvas.bbox("all"))
+
+
+# Bind the mousewheel event to zoom functions
+#root.bind("<Control-MouseWheel>", lambda event: zoom_in(event) if event.delta > 0 else zoom_out(event))
+
+
+
+def on_canvas_scroll(event):
+    canvas.configure(scrollregion=canvas.bbox("all"), width=1600, height=1500)
+
+def _on_mousewheel(event):
+    canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+# Inside your main function or appropriate setup function
+def initialize_ui_elements(root):
+    global board_combo, main_frame, pinout_frame
+
+    # Create input frame for user requests
+    create_input_frame(main_frame)
+
+    # Create a guide frame for user instructions
+    create_guide(main_frame)
+
+    # Create the pinout frame with image display and zoom functionalities
+    create_pinout_frame(main_frame)
+
+    # Create code frame for displaying generated code
+    create_code_frame(main_frame)
+
+    # Create explanation frame for displaying code explanations
+    create_explanation_frame(main_frame)
+
+    # Create titles for main code and explanation boxes
+    create_titles(main_frame)
+
+
+    # Create additional code tabs for extra code snippets
+    create_additional_code_tabs(main_frame)
+
+    # Create a spacer frame at the bottom
+    create_bottom_spacer(main_frame)
+
+    # After setting up board_combo and pinout_image_label
+    update_pinout_image(board_combo.get())  # Update the pinout image based on the selected board
+
+    # Make sure to include the binding for the combobox within this function, after the combobox is created.
+    board_combo.bind("<<ComboboxSelected>>", lambda event: update_pinout_image(board_combo.get()))
+
+
+
+def on_board_selected(event):
+    selected_board = board_combo.get()
+    if selected_board == "Add New Board...":
+        new_board = simpledialog.askstring("Add New Board", "Enter Board Name:")
+        if new_board and new_board not in board_combo['values']:
+            board_combo['values'] = (*board_combo['values'], new_board)
+            board_combo.set(new_board)
+            update_pinout_image(new_board)
+    else:
+        update_pinout_image(selected_board)
+
+
+def initialize_root():
+    #root = tk.Tk()
+    #root.title("Arduino Code Requester")
+    #root.configure(background='#C3D600')  # Kawasaki green
+    return root
+
+def create_input_frame(parent):
+    global user_input, board_combo
+
+    input_frame = ttk.LabelFrame(parent, text="Your Request", padding=(10, 5))
+    input_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew", columnspan=3)
+
+    # User input box
+    user_input = tk.Text(input_frame, height=15, width=80)
+    user_input.grid(row=0, column=0, padx=5, pady=5, sticky="ew", columnspan=2)
+
+    # Board selection label
+    board_label = ttk.Label(input_frame, text="Select Arduino Board:")
+    board_label.grid(row=1, column=0, sticky="w", padx=5, pady=5)
+
+    # Board selection combobox
+    board_names = get_board_names() + ["Add New Board..."]
+    board_combo = ttk.Combobox(input_frame, values=board_names)
+    board_combo.set("Select Board")
+    board_combo.grid(row=2, column=0, padx=5, pady=5, sticky="ew", columnspan=2)
+    board_combo.bind("<<ComboboxSelected>>", on_board_selected)
+
+    # Request code button
+    request_button = ttk.Button(input_frame, text="Request Code", command=request_code)
+    request_button.grid(row=3, column=0, padx=5, pady=10)
+
+    # Clear all button
+    clear_button = ttk.Button(input_frame, text="Clear All", command=clear_all_boxes)
+    clear_button.grid(row=3, column=1, padx=5, pady=10)
+
+
+# Function to copy code to clipboard
+def copy_code_to_clipboard():
+    root.clipboard_clear()
+    root.clipboard_append(code_text.get("1.0", tk.END))
+
+def create_code_frame(parent):
+    global v_scrollbar, code_text, line_numbers
+    code_frame = ttk.Frame(parent)
+    code_frame.grid(row=1, column=1, sticky='nsew', padx=10, pady=10)
+
+    v_scrollbar = tk.Scrollbar(code_frame, orient="vertical", command=on_scroll)
+    v_scrollbar.grid(row=0, column=2, sticky='ns')
+
+    line_numbers = tk.Text(code_frame, width=5, padx=3, takefocus=0, border=0, background='lightgray', state=tk.DISABLED, wrap='none')
+    line_numbers.grid(row=0, column=0, sticky='nsew')
+
+    code_text = tk.Text(code_frame, wrap=tk.NONE)
+    code_text.grid(row=0, column=1, sticky="nsew")
+    code_text.config(yscrollcommand=yscroll)
+    line_numbers.config(yscrollcommand=yscroll)
+
+    # Add Copy Code button
+    copy_button = ttk.Button(code_frame, text="Copy Code", command=copy_code_to_clipboard)
+    copy_button.grid(row=2, column=1, pady=5)
+
+    code_text.bind("<MouseWheel>", sync_scroll)
+    line_numbers.bind("<MouseWheel>", sync_scroll)
+
+
+def create_explanation_frame(parent):
+    global explanation_text
+    explanation_text = tk.Text(parent, wrap=tk.WORD, width=40)
+    explanation_text.grid(row=1, column=2, sticky="nsew", padx=10, pady=10)
+
+
+def create_additional_code_tabs(parent):
+    global additional_code_tabs
+    tab_control = ttk.Notebook(parent)
+
+    tab_names = ["Code 1", "Code 2", "Code 3", "Code 4"]
+
+    for tab_name in tab_names:
+        tab = ttk.Frame(tab_control)
+        tab_control.add(tab, text=tab_name)
+
+        # Create a Scrollbar and attach it to `tab`
+        scrollbar = tk.Scrollbar(tab)
+        scrollbar.pack(side="right", fill="y")
+
+        # Create a Text widget with a Scrollbar and set height to 10
+        text_box = tk.Text(tab, wrap="word", yscrollcommand=scrollbar.set, height=10)
+        text_box.pack(expand=True, fill="both")
+        scrollbar.config(command=text_box.yview)
+
+        additional_code_tabs.append(text_box)  # Append the textbox to the list
+
+    tab_control.grid(row=2, column=0, columnspan=3, padx=10, pady=10, sticky='ew')
+
+# Rest of the code remains the
+
+
+def clear_all_boxes():
+    global code_text, explanation_text, additional_code_tabs
+
+    # Clearing main code box and explanation
+    code_text.configure(state=tk.NORMAL)
+    code_text.delete(1.0, tk.END)
+    code_text.configure(state=tk.DISABLED)
+
+    explanation_text.configure(state=tk.NORMAL)
+    explanation_text.delete(1.0, tk.END)
+    explanation_text.configure(state=tk.DISABLED)
+
+    # Clearing additional code tabs without setting them to DISABLED
+    for tab in additional_code_tabs:
+        tab.delete(1.0, tk.END)
+
+
+def create_titles(parent):
+    # Title for the main code box
+    code_title = ttk.Label(parent, text="Main Code:")
+    code_title.grid(row=1, column=1, padx=10, pady=(10, 0), sticky="nw")
+
+    # Title for the explanation box
+    explanation_title = ttk.Label(parent, text="Code Explanation:")
+    explanation_title.grid(row=1, column=2, padx=10, pady=(10, 0), sticky="nw")
+
+
+def create_guide(parent):
+    guide_frame = ttk.LabelFrame(parent, text="How to Use", padding=(10, 5))
+    guide_frame.grid(row=0, column=2, padx=10, pady=10, sticky="ew")
+
+    guide_text = """
+    1. Enter your Arduino-related query in the "Your Request" box.
+    2. Select the desired Arduino board type.
+    3. Click "Request Code" to get the code.
+    4. The code will appear in the "Main Code" box.
+    5. An explanation of the code will be given in the "Code Explanation" box.
+    6. Additional codes, if provided, will be placed in the "Code 1", "Code 2", etc. tabs.
+    7. You can reference the additional codes in your request for more details.
+    8. For troubleshooting, you can copy any error messages you encounter in the Arduino IDE and paste them into the 'Your Request' box for assistance in resolving the issues.
+    """
+
+    guide_label = ttk.Label(guide_frame, text=guide_text, wraplength=250, justify="left")
+    guide_label.pack(padx=10, pady=10)
+
+    #User guide button
+    user_guide_button = ttk.Button(guide_frame, text="Show Basics User Guide", command=show_user_guide)
+    user_guide_button.pack(padx=10, pady=5)
+
+
+def create_bottom_spacer(parent):
+    spacer_frame = ttk.Frame(parent, height=2)  # Height adjusted for spacer
+    spacer_frame.grid(row=4, column=0, columnspan=3, sticky='ew')
+
+    # Customizing text and font
+    creator_text = "Antti Martikkala - 2024"
+    font_style = ("Arial", 10, "italic")
+
+    # Adding a label with custom text and font inside the spacer frame
+    spacer_label = ttk.Label(spacer_frame, text=creator_text, font=font_style)
+    spacer_label.pack(pady=(10, 10))  # Adjust vertical padding as needed
+
+
+def on_close():
+    root.destroy()  # This will close the Tkinter window
+
+def on_mainframe_configure(event):
+    canvas.configure(scrollregion=canvas.bbox("all"))
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.geometry("1600x800")  # Set the size of the root window
+    root.title("Arduino Code Requester")
+    root.protocol("WM_DELETE_WINDOW", on_close)  # Bind the close event
+
+    # Create a main canvas and a vertical scrollbar
+    canvas = tk.Canvas(root)
+    v_scrollbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=v_scrollbar.set)
+
+    # Pack scrollbar and canvas
+    v_scrollbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    # Add a frame inside the canvas
+    main_frame = tk.Frame(canvas)
+    canvas.create_window((0,0), window=main_frame, anchor="nw")
+
+    # Bind the scroll region to the size of the canvas
+    main_frame.bind("<Configure>", on_mainframe_configure)
+    root.bind_all("<MouseWheel>", _on_mousewheel)
+
+    # Initialize UI elements with main_frame instead of root
+    create_input_frame(main_frame)
+    create_guide(main_frame)
+    create_pinout_frame(main_frame)
+    create_code_frame(main_frame)
+    create_explanation_frame(main_frame)
+    create_titles(main_frame)
+
+    create_additional_code_tabs(main_frame)
+    create_bottom_spacer(main_frame)
+
+
+    # Set initial pinout image based on the selected board
+    update_pinout_image(board_combo.get())
+
+    # Bind the combobox selection event
+    board_combo.bind("<<ComboboxSelected>>", lambda event: update_pinout_image(board_combo.get()))
+
+    root.mainloop()
+
